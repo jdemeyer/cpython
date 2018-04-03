@@ -1712,6 +1712,18 @@ _Py_ReadyTypes(void)
     if (PyType_Ready(&_PyWeakref_ProxyType) < 0)
         Py_FatalError("Can't initialize weakref proxy type");
 
+    if (PyType_Ready(&PyBaseFunction_Type) < 0)
+        Py_FatalError("Can't initialize base_function type");
+
+    if (PyType_Ready(&PyCFunction_Type) < 0)
+        Py_FatalError("Can't initialize built-in function type");
+
+    if (PyType_Ready(&PyMethod_Type) < 0)
+        Py_FatalError("Can't initialize method type");
+
+    if (PyType_Ready(&PyFunction_Type) < 0)
+        Py_FatalError("Can't initialize function type");
+
     if (PyType_Ready(&PyLong_Type) < 0)
         Py_FatalError("Can't initialize int type");
 
@@ -1816,15 +1828,6 @@ _Py_ReadyTypes(void)
 
     if (PyType_Ready(&PyFrame_Type) < 0)
         Py_FatalError("Can't initialize frame type");
-
-    if (PyType_Ready(&PyCFunction_Type) < 0)
-        Py_FatalError("Can't initialize builtin function type");
-
-    if (PyType_Ready(&PyMethod_Type) < 0)
-        Py_FatalError("Can't initialize method type");
-
-    if (PyType_Ready(&PyFunction_Type) < 0)
-        Py_FatalError("Can't initialize function type");
 
     if (PyType_Ready(&PyDictProxy_Type) < 0)
         Py_FatalError("Can't initialize dict proxy type");
@@ -2001,7 +2004,6 @@ Py_ssize_t (*_Py_abstract_hack)(PyObject *) = PyObject_Size;
 void
 _PyObject_DebugTypeStats(FILE *out)
 {
-    _PyCFunction_DebugMallocStats(out);
     _PyDict_DebugMallocStats(out);
     _PyFloat_DebugMallocStats(out);
     _PyFrame_DebugMallocStats(out);

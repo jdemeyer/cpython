@@ -4774,7 +4774,10 @@ add_methods(PyTypeObject *type, PyMethodDef *meth)
             descr = PyDescr_NewClassMethod(type, meth);
         }
         else if (meth->ml_flags & METH_STATIC) {
-          PyObject *cfunc = PyCFunction_NewEx(meth, (PyObject*)type, NULL);
+            PyObject *cfunc = PyBaseFunction_New(&PyCFunction_Type,
+                                                 (PyCFunctionDef *)meth,
+                                                 (PyObject *)type, NULL,
+                                                 (PyObject *)type);
             if (cfunc == NULL)
                 return -1;
             descr = PyStaticMethod_New(cfunc);
@@ -5088,6 +5091,14 @@ inherit_slots(PyTypeObject *type, PyTypeObject *base)
         /* else they didn't agree about gc, and there isn't something
          * obvious to be done -- the type is on its own.
          */
+    }
+
+    /* Set Py_TPFLAGS_BASEFUNCTION when inheriting tp_call and tp_descr_get
+     * from base_function (PEP 575). */
+    if (type->tp_call == PyBaseFunction_Type.tp_call &&
+        type->tp_descr_get == PyBaseFunction_Type.tp_descr_get)
+    {
+        type->tp_flags |= Py_TPFLAGS_BASEFUNCTION;
     }
 }
 
@@ -5917,7 +5928,9 @@ add_tp_new_wrapper(PyTypeObject *type)
 
     if (_PyDict_GetItemId(type->tp_dict, &PyId___new__) != NULL)
         return 0;
-    func = PyCFunction_NewEx(tp_new_methoddef, (PyObject *)type, NULL);
+    func = PyBaseFunction_New(&PyCFunction_Type,
+                              (PyCFunctionDef *)tp_new_methoddef,
+                              (PyObject *)type, NULL, (PyObject *)type);
     if (func == NULL)
         return -1;
     if (_PyDict_SetItemId(type->tp_dict, &PyId___new__, func)) {

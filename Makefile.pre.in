@@ -407,7 +407,8 @@ OBJECT_OBJS=	\
 		Objects/dictobject.o \
 		Objects/odictobject.o \
 		Objects/memoryobject.o \
-		Objects/methodobject.o \
+		Objects/basefunction.o \
+		Objects/cfunction.o \
 		Objects/moduleobject.o \
 		Objects/namespaceobject.o \
 		Objects/object.o \
@@ -976,7 +977,8 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/marshal.h \
 		$(srcdir)/Include/memoryobject.h \
 		$(srcdir)/Include/metagrammar.h \
-		$(srcdir)/Include/methodobject.h \
+		$(srcdir)/Include/basefunction.h \
+		$(srcdir)/Include/cfunction.h \
 		$(srcdir)/Include/modsupport.h \
 		$(srcdir)/Include/moduleobject.h \
 		$(srcdir)/Include/namespaceobject.h \

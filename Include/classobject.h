@@ -34,6 +34,8 @@ PyAPI_FUNC(PyObject *) PyMethod_Self(PyObject *);
 
 PyAPI_FUNC(int) PyMethod_ClearFreeList(void);
 
+PyAPI_FUNC(void) _PyMethod_DebugMallocStats(FILE *out);
+
 typedef struct {
     PyObject_HEAD
     PyObject *func;

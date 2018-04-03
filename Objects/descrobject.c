@@ -122,7 +122,9 @@ classmethod_get(PyMethodDescrObject *descr, PyObject *obj, PyObject *type)
                      ((PyTypeObject *)type)->tp_name);
         return NULL;
     }
-    return PyCFunction_NewEx(descr->d_method, type, NULL);
+    return PyBaseFunction_New(&PyCFunction_Type,
+                              (PyCFunctionDef*)(descr->d_method),
+                              type, NULL, (PyObject *)PyDescr_TYPE(descr));
 }
 
 static PyObject *
@@ -132,7 +134,9 @@ method_get(PyMethodDescrObject *descr, PyObject *obj, PyObject *type)
 
     if (descr_check((PyDescrObject *)descr, obj, &res))
         return res;
-    return PyCFunction_NewEx(descr->d_method, obj, NULL);
+    return PyBaseFunction_New(&PyCFunction_Type,
+                              (PyCFunctionDef*)(descr->d_method),
+                              obj, NULL, (PyObject *)PyDescr_TYPE(descr));
 }
 
 static PyObject *

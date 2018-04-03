@@ -174,7 +174,6 @@ PyAPI_FUNC(void) _Py_HashRandomization_Fini(void);
 #ifndef Py_LIMITED_API
 PyAPI_FUNC(void) PyMethod_Fini(void);
 PyAPI_FUNC(void) PyFrame_Fini(void);
-PyAPI_FUNC(void) PyCFunction_Fini(void);
 PyAPI_FUNC(void) PyDict_Fini(void);
 PyAPI_FUNC(void) PyTuple_Fini(void);
 PyAPI_FUNC(void) PyList_Fini(void);

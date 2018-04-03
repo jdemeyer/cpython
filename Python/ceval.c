@@ -4550,29 +4550,12 @@ call_function(PyObject ***pp_stack, Py_ssize_t oparg, PyObject *kwnames)
     Py_ssize_t nargs = oparg - nkwargs;
     PyObject **stack = (*pp_stack) - nargs - nkwargs;
 
-    /* Always dispatch PyCFunction first, because these are
+    /* Always dispatch PyBaseFunction first, because these are
        presumed to be the most frequent callable object.
     */
-    if (PyCFunction_Check(func)) {
+    if (PyBaseFunction_CheckFast(func)) {
         PyThreadState *tstate = PyThreadState_GET();
-        C_TRACE(x, _PyCFunction_FastCallKeywords(func, stack, nargs, kwnames));
-    }
-    else if (Py_TYPE(func) == &PyMethodDescr_Type) {
-        PyThreadState *tstate = PyThreadState_GET();
-        if (tstate->use_tracing && tstate->c_profilefunc) {
-            // We need to create PyCFunctionObject for tracing.
-            PyMethodDescrObject *descr = (PyMethodDescrObject*)func;
-            func = PyCFunction_NewEx(descr->d_method, stack[0], NULL);
-            if (func == NULL) {
-                return NULL;
-            }
-            C_TRACE(x, _PyCFunction_FastCallKeywords(func, stack+1, nargs-1,
-                                                     kwnames));
-            Py_DECREF(func);
-        }
-        else {
-            x = _PyMethodDescr_FastCallKeywords(func, stack, nargs, kwnames);
-        }
+        C_TRACE(x, _PyBaseFunction_FastCall(func, stack, nargs, kwnames));
     }
     else {
         if (PyMethod_Check(func) && PyMethod_GET_SELF(func) != NULL) {

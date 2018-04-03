@@ -1163,7 +1163,6 @@ Py_FinalizeEx(void)
     /* Sundry finalizers */
     PyMethod_Fini();
     PyFrame_Fini();
-    PyCFunction_Fini();
     PyTuple_Fini();
     PyList_Fini();
     PySet_Fini();
