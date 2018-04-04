@@ -312,6 +312,21 @@ func_hash(PyBaseFunctionObject *m)
 }
 
 
+static PyObject *
+func_get(PyObject *func, PyObject *obj, PyObject *type)
+{
+    /* Check cases where we just return the function as-is */
+    if (obj == NULL ||                           /* Binding to a class */
+        PyBaseFunction_REAL_SELF(func) != NULL)  /* Already bound */
+    {
+        Py_INCREF(func);
+        return func;
+    }
+
+    return PyMethod_New(func, obj);
+}
+
+
 PyTypeObject PyBaseFunction_Type = {
     PyVarObject_HEAD_INIT(&PyType_Type, 0)
     "base_function",
@@ -347,7 +362,7 @@ PyTypeObject PyBaseFunction_Type = {
     func_getsets,                               /* tp_getset */
     0,                                          /* tp_base */
     0,                                          /* tp_dict */
-    0, /* TODO */                               /* tp_descr_get */
+    (descrgetfunc)func_get,                     /* tp_descr_get */
     0,                                          /* tp_descr_set */
     0,                                          /* tp_dictoffset */
     0,                                          /* tp_init */

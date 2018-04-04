@@ -390,7 +390,7 @@ OBJECT_OBJS=	\
 		Objects/bytesobject.o \
 		Objects/call.o \
 		Objects/cellobject.o \
-		Objects/classobject.o \
+		Objects/methodobject.o \
 		Objects/codeobject.o \
 		Objects/complexobject.o \
 		Objects/descrobject.o \
@@ -950,7 +950,7 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/bytesobject.h \
 		$(srcdir)/Include/cellobject.h \
 		$(srcdir)/Include/ceval.h \
-		$(srcdir)/Include/classobject.h \
+		$(srcdir)/Include/methodobject.h \
 		$(srcdir)/Include/code.h \
 		$(srcdir)/Include/codecs.h \
 		$(srcdir)/Include/compile.h \

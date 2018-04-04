@@ -95,7 +95,7 @@
 #include "cfunction.h"
 #include "moduleobject.h"
 #include "funcobject.h"
-#include "classobject.h"
+#include "methodobject.h"
 #include "fileobject.h"
 #include "pycapsule.h"
 #include "traceback.h"

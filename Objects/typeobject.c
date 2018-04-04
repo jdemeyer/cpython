@@ -4785,7 +4785,11 @@ add_methods(PyTypeObject *type, PyMethodDef *meth)
             Py_DECREF(cfunc);
         }
         else {
-            descr = PyDescr_NewMethod(type, meth);
+            descr = PyBaseFunction_New(&PyCFunction_Type,
+                                       (PyCFunctionDef *)meth,
+                                       NULL, NULL,
+                                       (PyObject *)type);
+            isdescr = 0;
         }
         if (descr == NULL)
             return -1;

@@ -1,4 +1,4 @@
-/* Class object implementation (dead now except for methods) */
+/* bound_method object implementation */
 
 #include "Python.h"
 #include "internal/mem.h"
@@ -7,10 +7,9 @@
 
 #define TP_DESCR_GET(t) ((t)->tp_descr_get)
 
-/* Free list for method objects to safe malloc/free overhead
- * The im_self element is used to chain the elements.
- */
+/* Free list for method objects to safe malloc/free overhead */
 static PyMethodObject *free_list;
+#define next_free base.m_self
 static int numfree = 0;
 #ifndef PyMethod_MAXFREELIST
 #define PyMethod_MAXFREELIST 256
@@ -29,48 +28,77 @@ PyMethod_Function(PyObject *im)
     return ((PyMethodObject *)im)->im_func;
 }
 
-PyObject *
-PyMethod_Self(PyObject *im)
-{
-    if (!PyMethod_Check(im)) {
-        PyErr_BadInternalCall();
-        return NULL;
-    }
-    return ((PyMethodObject *)im)->im_self;
-}
-
 /* Method objects are used for bound instance methods returned by
    instancename.methodname. ClassName.methodname returns an ordinary
    function.
 */
 
+
+/* TODO: use METH_FASTCALL here */
+static PyCFunctionDef ml_method_indirect_call =
+    {"bound_method", (PyCFunction)_PyObject_Call_Prepend,
+            METH_VARARGS | METH_KEYWORDS | METH_PASS_FUNCTION | METH_CALL_UNBOUND};
+
+
 PyObject *
 PyMethod_New(PyObject *func, PyObject *self)
 {
     PyMethodObject *im;
-    if (self == NULL) {
+    if (func == NULL || self == NULL) {
         PyErr_BadInternalCall();
         return NULL;
     }
+
+    int do_bind = 0;
+    PyObject *parent = NULL;
+
+    if (PyBaseFunction_CheckFast(func)) {
+        if (PyBaseFunction_REAL_SELF(func) == NULL) {
+            do_bind = 1;
+            if (_PyBaseFunction_CheckObjclass(func, self) < 0) {
+                return NULL;
+            }
+        }
+        parent = PyBaseFunction_GET_PARENT(func);
+    }
+
+    /* Create new method from free list if possible */
     im = free_list;
     if (im != NULL) {
-        free_list = (PyMethodObject *)(im->im_self);
+        free_list = (PyMethodObject *)(im->next_free);
         (void)PyObject_INIT(im, &PyMethod_Type);
         numfree--;
     }
     else {
-        im = PyObject_GC_New(PyMethodObject, &PyMethod_Type);
+        im = (PyMethodObject*)PyObject_GC_New(PyMethodObject, &PyMethod_Type);
         if (im == NULL)
             return NULL;
     }
-    im->im_weakreflist = NULL;
+
+    Py_INCREF(self);
+    im->base.m_self = self;
+    /* m_module is not needed because we override __module__ */
+    im->base.m_module = NULL;
+    Py_XINCREF(parent);
+    im->base.m_parent = parent;
+    im->base.m_weakreflist = NULL;
     Py_INCREF(func);
     im->im_func = func;
-    Py_XINCREF(self);
-    im->im_self = self;
+
+    if (do_bind && !PyBaseFunction_HAS_FLAG(func, METH_CALL_UNBOUND)) {
+        /* Re-use the m_ml from the original function */
+        PyBaseFunctionObject *f = (PyBaseFunctionObject *)func;
+        im->base.m_ml = f->m_ml;
+    }
+    else {
+        /* General case */
+        im->base.m_ml = &ml_method_indirect_call;
+    }
+
     _PyObject_GC_TRACK(im);
     return (PyObject *)im;
 }
+
 
 static PyObject *
 method_reduce(PyMethodObject *im, PyObject *Py_UNUSED(ignored))
@@ -91,6 +119,7 @@ method_reduce(PyMethodObject *im, PyObject *Py_UNUSED(ignored))
     return Py_BuildValue("O(ON)", getattr, self, funcname);
 }
 
+
 static PyMethodDef method_methods[] = {
     {"__reduce__", (PyCFunction)method_reduce, METH_NOARGS, NULL},
     {NULL, NULL}
@@ -98,37 +127,51 @@ static PyMethodDef method_methods[] = {
 
 /* Descriptors for PyMethod attributes */
 
-/* im_func and im_self are stored in the PyMethod object */
-
 #define MO_OFF(x) offsetof(PyMethodObject, x)
 
 static PyMemberDef method_memberlist[] = {
     {"__func__", T_OBJECT, MO_OFF(im_func), READONLY|RESTRICTED,
      "the function (or other callable) implementing a method"},
-    {"__self__", T_OBJECT, MO_OFF(im_self), READONLY|RESTRICTED,
-     "the instance to which a method is bound"},
     {NULL}      /* Sentinel */
 };
 
-/* Christian Tismer argued convincingly that method attributes should
-   (nearly) always override function attributes.
-   The one exception is __doc__; there's a default __doc__ which
-   should only be used for the class, not for instances */
 
+/* Override __doc__, __name__, __qualname__ and __module__
+   to go through __func__ instead. */
 static PyObject *
-method_get_doc(PyMethodObject *im, void *context)
+method_get_doc(PyObject *im, void *context)
 {
-    static PyObject *docstr;
-    if (docstr == NULL) {
-        docstr= PyUnicode_InternFromString("__doc__");
-        if (docstr == NULL)
-            return NULL;
-    }
-    return PyObject_GetAttr(im->im_func, docstr);
+    _Py_IDENTIFIER(__doc__);
+    return _PyObject_GetAttrId(PyMethod_GET_FUNCTION(im), &PyId___doc__);
 }
 
+static PyObject *
+method_get_name(PyObject *im, void *context)
+{
+    _Py_IDENTIFIER(__name__);
+    return _PyObject_GetAttrId(PyMethod_GET_FUNCTION(im), &PyId___name__);
+}
+
+static PyObject *
+method_get_qualname(PyObject *im, void *context)
+{
+    _Py_IDENTIFIER(__qualname__);
+    return _PyObject_GetAttrId(PyMethod_GET_FUNCTION(im), &PyId___qualname__);
+}
+
+static PyObject *
+method_get_module(PyObject *im, void *context)
+{
+    _Py_IDENTIFIER(__module__);
+    return _PyObject_GetAttrId(PyMethod_GET_FUNCTION(im), &PyId___module__);
+}
+
+
 static PyGetSetDef method_getset[] = {
-    {"__doc__", (getter)method_get_doc, NULL, NULL},
+    {"__doc__", method_get_doc, NULL, NULL},
+    {"__name__", method_get_name, NULL, NULL},
+    {"__qualname__", method_get_qualname, NULL, NULL},
+    {"__module__", method_get_module, NULL, NULL},
     {0}
 };
 
@@ -163,7 +206,7 @@ method_getattro(PyObject *obj, PyObject *name)
 PyDoc_STRVAR(method_doc,
 "method(function, instance)\n\
 \n\
-Create a bound instance method object.");
+Create a bound method object.");
 
 static PyObject *
 method_new(PyTypeObject* type, PyObject* args, PyObject *kw)
@@ -190,61 +233,55 @@ method_new(PyTypeObject* type, PyObject* args, PyObject *kw)
     return PyMethod_New(func, self);
 }
 
+
 static void
 method_dealloc(PyMethodObject *im)
 {
     _PyObject_GC_UNTRACK(im);
-    if (im->im_weakreflist != NULL)
+    if (im->base.m_weakreflist != NULL) {
         PyObject_ClearWeakRefs((PyObject *)im);
+    }
+    _PyBaseFunction_Clear((PyObject *)im);
     Py_DECREF(im->im_func);
-    Py_XDECREF(im->im_self);
     if (numfree < PyMethod_MAXFREELIST) {
-        im->im_self = (PyObject *)free_list;
+        im->next_free = (PyObject *)free_list;
         free_list = im;
         numfree++;
+        return;
     }
-    else {
-        PyObject_GC_Del(im);
-    }
+    PyObject_GC_Del(im);
 }
+
 
 static PyObject *
 method_richcompare(PyObject *self, PyObject *other, int op)
 {
-    PyMethodObject *a, *b;
-    PyObject *res;
-    int eq;
-
-    if ((op != Py_EQ && op != Py_NE) ||
-        !PyMethod_Check(self) ||
-        !PyMethod_Check(other))
-    {
+    int b;
+    if ((op != Py_EQ && op != Py_NE) || !PyBaseFunction_CheckFast(other)) {
         Py_RETURN_NOTIMPLEMENTED;
     }
-    a = (PyMethodObject *)self;
-    b = (PyMethodObject *)other;
-    eq = PyObject_RichCompareBool(a->im_func, b->im_func, Py_EQ);
-    if (eq == 1) {
-        if (a->im_self == NULL || b->im_self == NULL)
-            eq = a->im_self == b->im_self;
-        else
-            eq = PyObject_RichCompareBool(a->im_self, b->im_self,
-                                          Py_EQ);
+    if (self == other) {
+        b = (op == Py_EQ);
     }
-    if (eq < 0)
-        return NULL;
-    if (op == Py_EQ)
-        res = eq ? Py_True : Py_False;
-    else
-        res = eq ? Py_False : Py_True;
+    else {
+        b = _PyBaseFunction_RichCompareBool(self, other, op);
+        if (b == (op == Py_EQ)) {
+            b = PyObject_RichCompareBool(PyMethod_GET_FUNCTION(self),
+                                         PyMethod_GET_FUNCTION(other), op);
+        }
+        if (b == -1) {
+            return NULL;
+        }
+    }
+    PyObject *res = b ? Py_True : Py_False;
     Py_INCREF(res);
     return res;
 }
 
+
 static PyObject *
 method_repr(PyMethodObject *a)
 {
-    PyObject *self = a->im_self;
     PyObject *func = a->im_func;
     PyObject *funcname, *result;
     const char *defname = "?";
@@ -263,72 +300,49 @@ method_repr(PyMethodObject *a)
 
     /* XXX Shouldn't use repr()/%R here! */
     result = PyUnicode_FromFormat("<bound method %V of %R>",
-                                  funcname, defname, self);
+                                  funcname, defname,
+                                  PyMethod_GET_SELF(a));
 
     Py_XDECREF(funcname);
     return result;
 }
 
+
 static Py_hash_t
 method_hash(PyMethodObject *a)
 {
-    Py_hash_t x, y;
-    if (a->im_self == NULL)
-        x = PyObject_Hash(Py_None);
-    else
-        x = PyObject_Hash(a->im_self);
-    if (x == -1)
+    Py_uhash_t mult = _PyHASH_MULTIPLIER, err = -1;
+
+    Py_uhash_t h = PyBaseFunction_Type.tp_hash((PyObject *)a);
+    if (h == err) {
         return -1;
-    y = PyObject_Hash(a->im_func);
-    if (y == -1)
+    }
+
+    Py_uhash_t t = PyObject_Hash(a->im_func);
+    if (t == err) {
         return -1;
-    x = x ^ y;
-    if (x == -1)
-        x = -2;
-    return x;
+    }
+    h = (h * mult) + t;
+
+    if (h == err) {
+        h--;
+    }
+    return h;
 }
+
 
 static int
 method_traverse(PyMethodObject *im, visitproc visit, void *arg)
 {
+    PyBaseFunction_Type.tp_traverse((PyObject*)im, visit, arg);
     Py_VISIT(im->im_func);
-    Py_VISIT(im->im_self);
     return 0;
 }
 
-static PyObject *
-method_call(PyObject *method, PyObject *args, PyObject *kwargs)
-{
-    PyObject *self, *func;
-
-    self = PyMethod_GET_SELF(method);
-    if (self == NULL) {
-        PyErr_BadInternalCall();
-        return NULL;
-    }
-
-    func = PyMethod_GET_FUNCTION(method);
-
-    return _PyObject_Call_Prepend(func, self, args, kwargs);
-}
-
-static PyObject *
-method_descr_get(PyObject *meth, PyObject *obj, PyObject *cls)
-{
-    /* Don't rebind an already bound method of a class that's not a base
-       class of cls. */
-    if (PyMethod_GET_SELF(meth) != NULL) {
-        /* Already bound */
-        Py_INCREF(meth);
-        return meth;
-    }
-    /* Bind it to obj */
-    return PyMethod_New(PyMethod_GET_FUNCTION(meth), obj);
-}
 
 PyTypeObject PyMethod_Type = {
     PyVarObject_HEAD_INIT(&PyType_Type, 0)
-    "method",
+    "bound_method",
     sizeof(PyMethodObject),
     0,
     (destructor)method_dealloc,                 /* tp_dealloc */
@@ -341,25 +355,26 @@ PyTypeObject PyMethod_Type = {
     0,                                          /* tp_as_sequence */
     0,                                          /* tp_as_mapping */
     (hashfunc)method_hash,                      /* tp_hash */
-    method_call,                                /* tp_call */
+    0,                                          /* tp_call */
     0,                                          /* tp_str */
     method_getattro,                            /* tp_getattro */
     PyObject_GenericSetAttr,                    /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC, /* tp_flags */
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC |
+        Py_TPFLAGS_BASEFUNCTION,                /* tp_flags */
     method_doc,                                 /* tp_doc */
     (traverseproc)method_traverse,              /* tp_traverse */
-    0,                                          /* tp_clear */
-    method_richcompare,                         /* tp_richcompare */
-    offsetof(PyMethodObject, im_weakreflist), /* tp_weaklistoffset */
+    _PyBaseFunction_Clear,                      /* tp_clear */
+    (richcmpfunc)method_richcompare,            /* tp_richcompare */
+    0,                                          /* tp_weaklistoffset */
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
     method_methods,                             /* tp_methods */
     method_memberlist,                          /* tp_members */
     method_getset,                              /* tp_getset */
-    0,                                          /* tp_base */
+    &PyBaseFunction_Type,                       /* tp_base */
     0,                                          /* tp_dict */
-    method_descr_get,                           /* tp_descr_get */
+    0,                                          /* tp_descr_get */
     0,                                          /* tp_descr_set */
     0,                                          /* tp_dictoffset */
     0,                                          /* tp_init */
@@ -376,7 +391,7 @@ PyMethod_ClearFreeList(void)
 
     while (free_list) {
         PyMethodObject *im = free_list;
-        free_list = (PyMethodObject *)(im->im_self);
+        free_list = (PyMethodObject *)(im->next_free);
         PyObject_GC_Del(im);
         numfree--;
     }
