@@ -7,8 +7,32 @@
 #include "code.h"
 #include "structmember.h"
 
+
+static void
+dfunc_dealloc(PyDefinedFunctionObject *op)
+{
+    _PyObject_GC_UNTRACK(op);
+    if (op->base.m_weakreflist != NULL) {
+        PyObject_ClearWeakRefs((PyObject *)op);
+    }
+    _PyBaseFunction_Clear((PyObject *)op);
+    Py_XDECREF(op->func_dict);
+    PyObject_GC_Del(op);
+}
+
+
+static int
+dfunc_traverse(PyDefinedFunctionObject *f, visitproc visit, void *arg)
+{
+    PyBaseFunction_Type.tp_traverse((PyObject *)f, visit, arg);
+    Py_VISIT(f->func_dict);
+    return 0;
+}
+
+
 PyObject *
-PyFunction_NewWithQualName(PyObject *code, PyObject *globals, PyObject *qualname)
+PyFunction_NewPython(PyTypeObject *cls, PyObject *code,
+                     PyObject *globals, PyObject *name, PyObject *qualname)
 {
     PyFunctionObject *op;
     PyObject *doc, *consts, *module;
@@ -20,20 +44,40 @@ PyFunction_NewWithQualName(PyObject *code, PyObject *globals, PyObject *qualname
             return NULL;
     }
 
-    op = PyObject_GC_New(PyFunctionObject, &PyFunction_Type);
-    if (op == NULL)
+    if (name == NULL) {
+        name = ((PyCodeObject *)code)->co_name;
+    }
+    if (qualname == NULL) {
+        qualname = name;
+    }
+    const char *utf8name = PyUnicode_AsUTF8(name);
+    if (utf8name == NULL) {
         return NULL;
+    }
 
-    op->func_weakreflist = NULL;
+    /* __module__: If module name is in globals, use it. */
+    module = PyDict_GetItem(globals, __name__);
+
+    op = (PyFunctionObject *)PyBaseFunction_New(cls, NULL, NULL, module, NULL);
+    if (op == NULL) {
+        return NULL;
+    }
+
+    op->base.m_ml = &op->_ml;
+    op->base.m_ml->ml_name = utf8name;
+    op->base.m_ml->ml_flags = METH_FASTCALL | METH_KEYWORDS |
+                              METH_PASS_FUNCTION | METH_CALL_UNBOUND |
+                              METH_PYTHON;
+    op->base.m_ml->ml_meth = (PyCFunction)_PyFunction_FastCallSelf;
+
+    Py_INCREF(name);
+    op->func_name = name;
+    Py_INCREF(qualname);
+    op->func_qualname = qualname;
     Py_INCREF(code);
     op->func_code = code;
     Py_INCREF(globals);
     op->func_globals = globals;
-    op->func_name = ((PyCodeObject *)code)->co_name;
-    Py_INCREF(op->func_name);
-    op->func_defaults = NULL; /* No default arguments */
-    op->func_kwdefaults = NULL; /* No keyword only defaults */
-    op->func_closure = NULL;
 
     consts = ((PyCodeObject *)code)->co_consts;
     if (PyTuple_Size(consts) >= 1) {
@@ -46,32 +90,57 @@ PyFunction_NewWithQualName(PyObject *code, PyObject *globals, PyObject *qualname
     Py_INCREF(doc);
     op->func_doc = doc;
 
-    op->func_dict = NULL;
-    op->func_module = NULL;
-    op->func_annotations = NULL;
+    /* func_defaults, func_kwdefaults, func_closure, func_annotations, func_dict
+       remain NULL */
 
-    /* __module__: If module name is in globals, use it.
-       Otherwise, use None. */
-    module = PyDict_GetItem(globals, __name__);
-    if (module) {
-        Py_INCREF(module);
-        op->func_module = module;
-    }
-    if (qualname)
-        op->func_qualname = qualname;
-    else
-        op->func_qualname = op->func_name;
-    Py_INCREF(op->func_qualname);
-
-    _PyObject_GC_TRACK(op);
     return (PyObject *)op;
 }
 
+
 PyObject *
-PyFunction_New(PyObject *code, PyObject *globals)
+PyFunction_Copy(PyTypeObject *cls, PyObject *op)
 {
-    return PyFunction_NewWithQualName(code, globals, NULL);
+    PyFunctionObject* src = (PyFunctionObject *)op;
+
+    PyFunctionObject *res;
+    res = (PyFunctionObject *)PyBaseFunction_New(cls, NULL,
+                                                 src->base.m_self,
+                                                 src->base.m_module,
+                                                 src->base.m_parent);
+    if (res == NULL) {
+        return NULL;
+    }
+
+    res->base.m_ml = &res->_ml;
+    res->base.m_ml->ml_name = src->base.m_ml->ml_name;
+    res->base.m_ml->ml_flags = src->base.m_ml->ml_flags;
+    res->base.m_ml->ml_meth = src->base.m_ml->ml_meth;
+
+    Py_INCREF(src->func_name);
+    res->func_name = src->func_name;
+    Py_INCREF(src->func_qualname);
+    res->func_qualname = src->func_qualname;
+    Py_INCREF(src->func_code);
+    res->func_code = src->func_code;
+    Py_INCREF(src->func_globals);
+    res->func_globals = src->func_globals;
+    Py_XINCREF(src->func_doc);
+    res->func_doc = src->func_doc;
+    Py_XINCREF(src->func_defaults);
+    res->func_defaults = src->func_defaults;
+    Py_XINCREF(src->func_closure);
+    res->func_closure = src->func_closure;
+
+    res->func_kwdefaults = src->func_kwdefaults ?
+                           PyDict_Copy(src->func_kwdefaults) : NULL;
+    res->func_annotations = src->func_annotations ?
+                            PyDict_Copy(src->func_annotations) : NULL;
+    res->func_dict = src->func_dict ?
+                     PyDict_Copy(src->func_dict) : NULL;
+
+    return (PyObject *)res;
 }
+
 
 PyObject *
 PyFunction_GetCode(PyObject *op)
@@ -100,7 +169,7 @@ PyFunction_GetModule(PyObject *op)
         PyErr_BadInternalCall();
         return NULL;
     }
-    return ((PyFunctionObject *) op) -> func_module;
+    return ((PyBaseFunctionObject *)op)->m_module;
 }
 
 PyObject *
@@ -232,12 +301,9 @@ PyFunction_SetAnnotations(PyObject *op, PyObject *annotations)
 #define OFF(x) offsetof(PyFunctionObject, x)
 
 static PyMemberDef func_memberlist[] = {
-    {"__closure__",   T_OBJECT,     OFF(func_closure),
-     RESTRICTED|READONLY},
+    {"__closure__",   T_OBJECT,     OFF(func_closure), RESTRICTED|READONLY},
+    {"__globals__",   T_OBJECT,     OFF(func_globals), RESTRICTED|READONLY},
     {"__doc__",       T_OBJECT,     OFF(func_doc), PY_WRITE_RESTRICTED},
-    {"__globals__",   T_OBJECT,     OFF(func_globals),
-     RESTRICTED|READONLY},
-    {"__module__",    T_OBJECT,     OFF(func_module), PY_WRITE_RESTRICTED},
     {NULL}  /* Sentinel */
 };
 
@@ -293,8 +359,13 @@ func_set_name(PyFunctionObject *op, PyObject *value)
                         "__name__ must be set to a string object");
         return -1;
     }
+    const char *utf8name = PyUnicode_AsUTF8(value);
+    if (utf8name == NULL) {
+        return -1;
+    }
     Py_INCREF(value);
     Py_XSETREF(op->func_name, value);
+    op->base.m_ml->ml_name = utf8name;
     return 0;
 }
 
@@ -460,10 +531,15 @@ func_new_impl(PyTypeObject *type, PyCodeObject *code, PyObject *globals,
     PyFunctionObject *newfunc;
     Py_ssize_t nfree, nclosure;
 
-    if (name != Py_None && !PyUnicode_Check(name)) {
-        PyErr_SetString(PyExc_TypeError,
-                        "arg 3 (name) must be None or string");
-        return NULL;
+    if (name == Py_None) {
+        name = NULL;
+    }
+    else {
+        if (!PyUnicode_Check(name)) {
+            PyErr_SetString(PyExc_TypeError,
+                            "arg 3 (name) must be None or string");
+            return NULL;
+        }
     }
     if (defaults != Py_None && !PyTuple_Check(defaults)) {
         PyErr_SetString(PyExc_TypeError,
@@ -502,18 +578,16 @@ func_new_impl(PyTypeObject *type, PyCodeObject *code, PyObject *globals,
         }
     }
 
-    newfunc = (PyFunctionObject *)PyFunction_New((PyObject *)code,
-                                                 globals);
+    newfunc = (PyFunctionObject *)PyFunction_NewPython(type,
+                                                       (PyObject *)code,
+                                                       globals,
+                                                       name, name);
     if (newfunc == NULL)
         return NULL;
 
-    if (name != Py_None) {
-        Py_INCREF(name);
-        Py_SETREF(newfunc->func_name, name);
-    }
     if (defaults != Py_None) {
         Py_INCREF(defaults);
-        newfunc->func_defaults  = defaults;
+        newfunc->func_defaults = defaults;
     }
     if (closure != Py_None) {
         Py_INCREF(closure);
@@ -523,39 +597,62 @@ func_new_impl(PyTypeObject *type, PyCodeObject *code, PyObject *globals,
     return (PyObject *)newfunc;
 }
 
+static PyObject *
+func_new_wrapper(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    /* Check for a single positional argument, namely a function to copy */
+    if (PyTuple_GET_SIZE(args) == 1 &&
+        (kwds == NULL || PyDict_GET_SIZE(kwds) == 0))
+    {
+        PyObject *arg1 = PyTuple_GET_ITEM(args, 0);
+        if (PyBaseFunction_Check(arg1)) {
+            if (!PyBaseFunction_HAS_FLAG(arg1, METH_PYTHON)) {
+                PyErr_SetString(PyExc_TypeError,
+                                "only Python functions can be copied");
+                return NULL;
+            }
+            return PyFunction_Copy(type, arg1);
+        }
+    }
+    return func_new(type, args, kwds);
+}
+
+
 static void
 func_dealloc(PyFunctionObject *op)
 {
     _PyObject_GC_UNTRACK(op);
-    if (op->func_weakreflist != NULL)
-        PyObject_ClearWeakRefs((PyObject *) op);
-    Py_DECREF(op->func_code);
-    Py_DECREF(op->func_globals);
-    Py_XDECREF(op->func_module);
-    Py_DECREF(op->func_name);
+    if (op->base.m_weakreflist != NULL) {
+        PyObject_ClearWeakRefs((PyObject *)op);
+    }
+    _PyBaseFunction_Clear((PyObject *)op);
+    Py_XDECREF(op->func_dict);
+    Py_XDECREF(op->func_name);
+    Py_XDECREF(op->func_qualname);
+    Py_XDECREF(op->func_code);
+    Py_XDECREF(op->func_globals);
+    Py_XDECREF(op->func_doc);
     Py_XDECREF(op->func_defaults);
     Py_XDECREF(op->func_kwdefaults);
-    Py_XDECREF(op->func_doc);
-    Py_XDECREF(op->func_dict);
     Py_XDECREF(op->func_closure);
     Py_XDECREF(op->func_annotations);
-    Py_XDECREF(op->func_qualname);
     PyObject_GC_Del(op);
 }
 
 static PyObject*
 func_repr(PyFunctionObject *op)
 {
-    return PyUnicode_FromFormat("<function %U at %p>",
+    return PyUnicode_FromFormat("<%s %U at %p>",
+                               Py_TYPE(op)->tp_name,
                                op->func_qualname, op);
 }
 
 static int
 func_traverse(PyFunctionObject *f, visitproc visit, void *arg)
 {
+    PyBaseFunction_Type.tp_traverse((PyObject *)f, visit, arg);
     Py_VISIT(f->func_code);
     Py_VISIT(f->func_globals);
-    Py_VISIT(f->func_module);
     Py_VISIT(f->func_defaults);
     Py_VISIT(f->func_kwdefaults);
     Py_VISIT(f->func_doc);
@@ -567,27 +664,68 @@ func_traverse(PyFunctionObject *f, visitproc visit, void *arg)
     return 0;
 }
 
-static PyObject *
-function_call(PyObject *func, PyObject *args, PyObject *kwargs)
-{
-    PyObject **stack;
-    Py_ssize_t nargs;
 
-    stack = &PyTuple_GET_ITEM(args, 0);
-    nargs = PyTuple_GET_SIZE(args);
-    return _PyFunction_FastCallDict(func, stack, nargs, kwargs);
+static int
+func_clear(PyFunctionObject *f)
+{
+    _PyBaseFunction_Clear((PyObject *)f);
+    Py_CLEAR(f->func_code);
+    Py_CLEAR(f->func_globals);
+    Py_CLEAR(f->func_defaults);
+    Py_CLEAR(f->func_kwdefaults);
+    Py_CLEAR(f->func_doc);
+    Py_CLEAR(f->func_name);
+    Py_CLEAR(f->func_dict);
+    Py_CLEAR(f->func_closure);
+    Py_CLEAR(f->func_annotations);
+    Py_CLEAR(f->func_qualname);
+    return 0;
 }
 
-/* Bind a function to an object */
-static PyObject *
-func_descr_get(PyObject *func, PyObject *obj, PyObject *type)
-{
-    if (obj == Py_None || obj == NULL) {
-        Py_INCREF(func);
-        return func;
-    }
-    return PyMethod_New(func, obj);
-}
+
+PyTypeObject PyDefinedFunction_Type = {
+    PyVarObject_HEAD_INIT(&PyType_Type, 0)
+    "defined_function",
+    sizeof(PyDefinedFunctionObject),
+    0,
+    (destructor)dfunc_dealloc,                  /* tp_dealloc */
+    0,                                          /* tp_print */
+    0,                                          /* tp_getattr */
+    0,                                          /* tp_setattr */
+    0,                                          /* tp_reserved */
+    0,                                          /* tp_repr */
+    0,                                          /* tp_as_number */
+    0,                                          /* tp_as_sequence */
+    0,                                          /* tp_as_mapping */
+    0,                                          /* tp_hash */
+    0,                                          /* tp_call */
+    0,                                          /* tp_str */
+    0,                                          /* tp_getattro */
+    0,                                          /* tp_setattro */
+    0,                                          /* tp_as_buffer */
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC |
+        Py_TPFLAGS_BASETYPE |
+        Py_TPFLAGS_BASEFUNCTION,                /* tp_flags */
+    0,                                          /* tp_doc */
+    (traverseproc)dfunc_traverse,               /* tp_traverse */
+    _PyBaseFunction_Clear,                      /* tp_clear */
+    0,                                          /* tp_richcompare */
+    0,                                          /* tp_weaklistoffset */
+    0,                                          /* tp_iter */
+    0,                                          /* tp_iternext */
+    0,                                          /* tp_methods */
+    0,                                          /* tp_members */
+    0,                                          /* tp_getset */
+    &PyBaseFunction_Type,                       /* tp_base */
+    0,                                          /* tp_dict */
+    0,                                          /* tp_descr_get */
+    0,                                          /* tp_descr_set */
+    OFF(func_dict),                             /* tp_dictoffset */
+    0,                                          /* tp_init */
+    0,                                          /* tp_alloc */
+    0,                                          /* tp_new */
+};
+
 
 PyTypeObject PyFunction_Type = {
     PyVarObject_HEAD_INIT(&PyType_Type, 0)
@@ -604,30 +742,32 @@ PyTypeObject PyFunction_Type = {
     0,                                          /* tp_as_sequence */
     0,                                          /* tp_as_mapping */
     0,                                          /* tp_hash */
-    function_call,                              /* tp_call */
+    0,                                          /* tp_call */
     0,                                          /* tp_str */
     0,                                          /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,    /* tp_flags */
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC |
+        Py_TPFLAGS_BASETYPE |
+        Py_TPFLAGS_BASEFUNCTION,                /* tp_flags */
     func_new__doc__,                            /* tp_doc */
     (traverseproc)func_traverse,                /* tp_traverse */
-    0,                                          /* tp_clear */
+    (inquiry)func_clear,                        /* tp_clear */
     0,                                          /* tp_richcompare */
-    offsetof(PyFunctionObject, func_weakreflist), /* tp_weaklistoffset */
+    0,                                          /* tp_weaklistoffset */
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
     0,                                          /* tp_methods */
     func_memberlist,                            /* tp_members */
     func_getsetlist,                            /* tp_getset */
-    0,                                          /* tp_base */
+    &PyDefinedFunction_Type,                    /* tp_base */
     0,                                          /* tp_dict */
-    func_descr_get,                             /* tp_descr_get */
+    0,                                          /* tp_descr_get */
     0,                                          /* tp_descr_set */
-    offsetof(PyFunctionObject, func_dict),      /* tp_dictoffset */
+    OFF(func_dict),                             /* tp_dictoffset */
     0,                                          /* tp_init */
     0,                                          /* tp_alloc */
-    func_new,                                   /* tp_new */
+    func_new_wrapper,                           /* tp_new */
 };
 
 

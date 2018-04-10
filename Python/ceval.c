@@ -4484,59 +4484,76 @@ PyEval_MergeCompilerFlags(PyCompilerFlags *cf)
 const char *
 PyEval_GetFuncName(PyObject *func)
 {
-    if (PyMethod_Check(func))
-        return PyEval_GetFuncName(PyMethod_GET_FUNCTION(func));
-    else if (PyFunction_Check(func))
-        return PyUnicode_AsUTF8(((PyFunctionObject*)func)->func_name);
-    else if (PyCFunction_Check(func))
-        return ((PyCFunctionObject*)func)->m_ml->ml_name;
-    else
-        return func->ob_type->tp_name;
+    while (PyMethod_Check(func)) {
+        func = PyMethod_GET_FUNCTION(func);
+    }
+    if (PyBaseFunction_Check(func)) {
+        return PyBaseFunction_GET_NAME(func);
+    }
+    return Py_TYPE(func)->tp_name;
 }
 
 const char *
 PyEval_GetFuncDesc(PyObject *func)
 {
-    if (PyMethod_Check(func))
+    if (PyBaseFunction_Check(func)) {
         return "()";
-    else if (PyFunction_Check(func))
-        return "()";
-    else if (PyCFunction_Check(func))
-        return "()";
-    else
-        return " object";
+    }
+    return " object";
 }
 
-#define C_TRACE(x, call) \
-if (tstate->use_tracing && tstate->c_profilefunc) { \
-    if (call_trace(tstate->c_profilefunc, tstate->c_profileobj, \
-        tstate, tstate->frame, \
-        PyTrace_C_CALL, func)) { \
-        x = NULL; \
+#define C_TRACE(x, basefunc, call) \
+{ \
+    int do_trace; \
+    PyThreadState *tstate; \
+    PyObject *arg = basefunc; \
+    if (PyBaseFunction_HAS_FLAG(basefunc, METH_PYTHON)) { \
+        do_trace = 0; \
     } \
     else { \
-        x = call; \
-        if (tstate->c_profilefunc != NULL) { \
-            if (x == NULL) { \
-                call_trace_protected(tstate->c_profilefunc, \
-                    tstate->c_profileobj, \
-                    tstate, tstate->frame, \
-                    PyTrace_C_EXCEPTION, func); \
-                /* XXX should pass (type, value, tb) */ \
-            } else { \
-                if (call_trace(tstate->c_profilefunc, \
-                    tstate->c_profileobj, \
-                    tstate, tstate->frame, \
-                    PyTrace_C_RETURN, func)) { \
-                    Py_DECREF(x); \
-                    x = NULL; \
+        tstate = PyThreadState_GET(); \
+        do_trace = tstate->use_tracing && tstate->c_profilefunc; \
+        if (do_trace && PyMethod_Check(arg)) { \
+            do { \
+                arg = PyMethod_GET_FUNCTION(arg); \
+                if (!PyBaseFunction_CheckFast(arg) || \
+                    PyBaseFunction_HAS_FLAG(basefunc, METH_PYTHON)) \
+                { \
+                    do_trace = 0; \
+                    break; \
+                } \
+            } while (PyMethod_Check(arg)); \
+        } \
+    } \
+    if (do_trace) { \
+        if (call_trace(tstate->c_profilefunc, tstate->c_profileobj, \
+            tstate, tstate->frame, \
+            PyTrace_C_CALL, arg)) { \
+            x = NULL; \
+        } \
+        else { \
+            x = call; \
+            if (tstate->c_profilefunc != NULL) { \
+                if (x == NULL) { \
+                    call_trace_protected(tstate->c_profilefunc, \
+                        tstate->c_profileobj, \
+                        tstate, tstate->frame, \
+                        PyTrace_C_EXCEPTION, arg); \
+                } else { \
+                    if (call_trace(tstate->c_profilefunc, \
+                        tstate->c_profileobj, \
+                        tstate, tstate->frame, \
+                        PyTrace_C_RETURN, arg)) { \
+                        Py_DECREF(x); \
+                        x = NULL; \
+                    } \
                 } \
             } \
         } \
+    } else { \
+        x = call; \
     } \
-} else { \
-    x = call; \
-    }
+}
 
 /* Issue #29227: Inline call_function() into _PyEval_EvalFrameDefault()
    to reduce the stack consumption. */
@@ -4554,16 +4571,16 @@ call_function(PyObject ***pp_stack, Py_ssize_t oparg, PyObject *kwnames)
        presumed to be the most frequent callable object.
     */
     if (PyBaseFunction_CheckFast(func)) {
-        PyThreadState *tstate = PyThreadState_GET();
-        C_TRACE(x, _PyBaseFunction_FastCall(func, stack, nargs, kwnames));
-    }
-    else {
-        if (PyMethod_Check(func) && PyMethod_GET_SELF(func) != NULL) {
-            /* Optimize access to bound methods. Reuse the Python stack
-               to pass 'self' as the first argument, replace 'func'
-               with 'self'. It avoids the creation of a new temporary tuple
-               for arguments (to replace func with self) when the method uses
-               FASTCALL. */
+        if (PyBaseFunction_HAS_FLAG(func, METH_CALL_UNBOUND) &&
+            PyMethod_Check(func))
+        {
+            /* Unpack a bound_method if it uses an indirect call.
+               Reuse the Python stack to pass 'self' as the first
+               argument, replace 'func' with 'self'.
+
+               If METH_CALL_UNBOUND is unset, then the bound_method
+               directly calls the C function and there is no need to
+               change anything. */
             PyObject *self = PyMethod_GET_SELF(func);
             Py_INCREF(self);
             func = PyMethod_GET_FUNCTION(func);
@@ -4576,13 +4593,11 @@ call_function(PyObject ***pp_stack, Py_ssize_t oparg, PyObject *kwnames)
             Py_INCREF(func);
         }
 
-        if (PyFunction_Check(func)) {
-            x = _PyFunction_FastCallKeywords(func, stack, nargs, kwnames);
-        }
-        else {
-            x = _PyObject_FastCallKeywords(func, stack, nargs, kwnames);
-        }
+        C_TRACE(x, func, _PyBaseFunction_FastCall(func, stack, nargs, kwnames));
         Py_DECREF(func);
+    }
+    else {
+        x = _PyObject_FastCallKeywords(func, stack, nargs, kwnames);
     }
 
     assert((x != NULL) ^ (PyErr_Occurred() != NULL));
@@ -4599,10 +4614,9 @@ call_function(PyObject ***pp_stack, Py_ssize_t oparg, PyObject *kwnames)
 static PyObject *
 do_call_core(PyObject *func, PyObject *callargs, PyObject *kwdict)
 {
-    if (PyCFunction_Check(func)) {
+    if (PyBaseFunction_CheckFast(func)) {
         PyObject *result;
-        PyThreadState *tstate = PyThreadState_GET();
-        C_TRACE(result, PyCFunction_Call(func, callargs, kwdict));
+        C_TRACE(result, func, PyBaseFunction_Call(func, callargs, kwdict));
         return result;
     }
     else {

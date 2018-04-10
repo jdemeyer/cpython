@@ -138,7 +138,7 @@ builtin___build_class__(PyObject *self, PyObject *const *args, Py_ssize_t nargs,
         return NULL;
     }
     func = args[0];   /* Better be callable */
-    if (!PyFunction_Check(func)) {
+    if (!PyFunction_CheckFast(func)) {
         PyErr_SetString(PyExc_TypeError,
                         "__build_class__: func must be a function");
         return NULL;

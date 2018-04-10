@@ -1445,7 +1445,9 @@ lookup_maybe_method(PyObject *self, _Py_Identifier *attrid, int *unbound)
         return NULL;
     }
 
-    if (PyFunction_Check(res)) {
+    if (PyBaseFunction_CheckFast(res) &&
+        PyBaseFunction_REAL_SELF(res) == NULL)
+    {
         /* Avoid temporary PyMethodObject */
         *unbound = 1;
         Py_INCREF(res);
