@@ -90,7 +90,7 @@ def ismethod(object):
 def ismethoddescriptor(object):
     """Return true if the object is a method descriptor.
 
-    But not if ismethod() or isclass() or isfunction() are true.
+    But not if isclass() or isbasefunction() is true.
 
     This is new in Python 2.2, and, for example, is true of int.__add__.
     An object passing this test has a __get__ attribute but not a __set__
@@ -101,7 +101,7 @@ def ismethoddescriptor(object):
     tests return false from the ismethoddescriptor() test, simply because
     the other tests promise more -- you can, e.g., count on having the
     __func__ attribute (etc) when an object passes ismethod()."""
-    if isclass(object) or ismethod(object) or isfunction(object):
+    if isclass(object) or isbasefunction(object):
         # mutual exclusion
         return False
     tp = type(object)
@@ -166,7 +166,7 @@ def isfunction(object):
         __globals__     global namespace in which this function was defined
         __annotations__ dict of parameter annotations
         __kwdefaults__  dict of keyword only parameters with defaults"""
-    return isinstance(object, types.FunctionType)
+    return isinstance(object, types.DefinedFunctionType)
 
 def _have_code_flag(func, flag):
     """Return true if ``func`` is a function (or a method wrapping a
@@ -280,20 +280,24 @@ def iscode(object):
     return isinstance(object, types.CodeType)
 
 def isbuiltin(object):
-    """Return true if the object is a built-in function or method.
+    """Return true if the object is a built-in function.
 
-    Built-in functions and methods provide these attributes:
+    Built-in functions provide these attributes:
         __doc__         documentation string
-        __name__        original name of this function or method
-        __self__        instance to which a method is bound, or None"""
+        __name__        original name of this function
+
+    If this is an unbound method, there is one additional attribute:
+        __objclass__    class defining this method"""
     return isinstance(object, types.BuiltinFunctionType)
+
+def isbasefunction(object):
+    """Return true if the object is an instance of base_function"""
+    return isinstance(object, types.BaseFunctionType)
 
 def isroutine(object):
     """Return true if the object is any kind of function or method."""
-    return (isbuiltin(object)
-            or isfunction(object)
-            or ismethod(object)
-            or ismethoddescriptor(object))
+    return isbasefunction(object) or ismethoddescriptor(object)
+
 
 def isabstract(object):
     """Return true if the object is an abstract base class (ABC)."""
@@ -460,21 +464,41 @@ def classify_class_attrs(cls):
             # unable to locate the attribute anywhere, most likely due to
             # buggy custom __dir__; discard and move on
             continue
-        obj = get_obj if get_obj is not None else dict_obj
-        # Classify the object or its descriptor.
-        if isinstance(dict_obj, (staticmethod, types.BuiltinMethodType)):
-            kind = "static method"
-            obj = dict_obj
-        elif isinstance(dict_obj, (classmethod, types.ClassMethodDescriptorType)):
-            kind = "class method"
-            obj = dict_obj
-        elif isinstance(dict_obj, property):
+
+        # Classify the object or its descriptor. Differentiate between
+        # different kinds of methods by checking binding behavior.
+        obj = dict_obj
+        if isinstance(obj, property):
             kind = "property"
-            obj = dict_obj
-        elif isroutine(obj):
-            kind = "method"
-        else:
+        elif not isroutine(obj):
             kind = "data"
+            if get_obj is not None:
+                obj = get_obj
+        elif obj is get_obj:
+            # Object does not bind to the class
+            if getattr(obj, "__self__", None) is not None:
+                # Already bound to some other object
+                # => behaves effectively like a static method
+                kind = "static method"
+            else:
+                kind = "method"
+        elif isinstance(obj, staticmethod):
+            kind = "static method"
+        else:
+            # Object binds to the class
+            try:
+                self = get_obj.__self__
+            except AttributeError:
+                # A non-data descriptor binding to the class but
+                # without __self__: no idea what this is...
+                kind = "method"
+            else:
+                if isinstance(self, type):
+                    kind = "class method"
+                elif self is None:
+                    kind = "static method"
+                else:
+                    kind = "unknown method"  # This should not happen
         result.append(Attribute(name, kind, homecls, obj))
         processed.add(name)
     return result
@@ -566,13 +590,10 @@ def _finddoc(obj):
             return None
     elif isbuiltin(obj):
         name = obj.__name__
-        self = obj.__self__
-        if (isclass(self) and
-            self.__qualname__ + '.' + name == obj.__qualname__):
-            # classmethod
-            cls = self
-        else:
-            cls = self.__class__
+        try:
+            cls = obj.__objclass__
+        except AttributeError:
+            return None
     # Should be tested before isdatadescriptor().
     elif isinstance(obj, property):
         func = obj.fget
@@ -1822,10 +1843,9 @@ def _signature_is_builtin(obj):
 
 
 def _signature_is_functionlike(obj):
-    """Private helper to test if `obj` is a duck type of FunctionType.
-    A good example of such objects are functions compiled with
-    Cython, which have all attributes that a pure Python function
-    would have, but have their code statically compiled.
+    """Private helper to test if `obj` is a duck type of DefinedFunctionType.
+    A good example of such objects are functions compiled with Cython
+    before PEP 575 was implemented.
     """
 
     if not callable(obj) or isclass(obj):
@@ -2104,14 +2124,12 @@ def _signature_from_builtin(cls, func, skip_bound_arg=True):
 def _signature_from_function(cls, func):
     """Private helper: constructs Signature for the given python function."""
 
-    is_duck_function = False
-    if not isfunction(func):
-        if _signature_is_functionlike(func):
-            is_duck_function = True
-        else:
-            # If it's not a pure Python function, and not a duck type
-            # of pure function:
-            raise TypeError('{!r} is not a Python function'.format(func))
+    if isfunction(func):
+        is_duck_function = False
+    elif _signature_is_functionlike(func):
+        is_duck_function = True
+    else:
+        raise TypeError('{!r} is not a function'.format(func))
 
     Parameter = cls._parameter_cls
 
@@ -2266,8 +2284,6 @@ def _signature_from_callable(obj, *,
                 return sig.replace(parameters=new_params)
 
     if isfunction(obj) or _signature_is_functionlike(obj):
-        # If it's a pure Python function, or an object that is duck type
-        # of a Python function (Cython functions, for instance), then:
         return _signature_from_function(sigcls, obj)
 
     if _signature_is_builtin(obj):

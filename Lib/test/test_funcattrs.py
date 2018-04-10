@@ -370,7 +370,7 @@ class StaticMethodAttrsTest(unittest.TestCase):
 
 class BuiltinFunctionPropertiesTest(unittest.TestCase):
     # XXX Not sure where this should really go since I can't find a
-    # test module specifically for builtin_function_or_method.
+    # test module specifically for builtin_function.
 
     def test_builtin__qualname__(self):
         import time

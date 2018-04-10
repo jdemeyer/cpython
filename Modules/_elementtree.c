@@ -3188,9 +3188,9 @@ expat_start_doctype_handler(XMLParserObject *self,
          */
         parser_doctype = PyObject_GetAttrString(self_pyobj, "doctype");
         if (parser_doctype &&
-            !(PyCFunction_Check(parser_doctype) &&
-              PyCFunction_GET_SELF(parser_doctype) == self_pyobj &&
-              PyCFunction_GET_FUNCTION(parser_doctype) ==
+            !(PyBaseFunction_Check(parser_doctype) &&
+              PyBaseFunction_GET_SELF(parser_doctype) == self_pyobj &&
+              PyBaseFunction_GET_FUNCTION(parser_doctype) ==
                     (PyCFunction) _elementtree_XMLParser_doctype)) {
             res = _elementtree_XMLParser_doctype_impl(self, doctype_name_obj,
                                                       pubid_obj, sysid_obj);

@@ -127,7 +127,7 @@ class TestPredicates(IsTestBase):
     def test_excluding_predicates(self):
         global tb
         self.istest(inspect.isbuiltin, 'sys.exit')
-        self.istest(inspect.isbuiltin, '[].append')
+        self.istest(inspect.ismethod, '[].append')
         self.istest(inspect.iscode, 'mod.spam.__code__')
         try:
             1/0

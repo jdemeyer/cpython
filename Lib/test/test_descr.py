@@ -4585,8 +4585,8 @@ order (MRO) for bases """
         self.assertEqual(X.__doc__, "banana")
 
     def test_qualname(self):
-        descriptors = [str.lower, complex.real, float.real, int.__add__]
-        types = ['method', 'member', 'getset', 'wrapper']
+        descriptors = [complex.real, float.real, int.__add__]
+        types = ['member', 'getset', 'wrapper']
 
         # make sure we have an example of each type of descriptor
         for d, n in zip(descriptors, types):

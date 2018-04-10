@@ -154,8 +154,7 @@ class ReprTests(unittest.TestCase):
         # Functions
         eq(repr(hash), '<built-in function hash>')
         # Methods
-        self.assertTrue(repr(''.split).startswith(
-            '<built-in method split of str object at 0x'))
+        eq(repr(''.split), "<bound method str.split of ''>")
 
     def test_range(self):
         eq = self.assertEqual

@@ -212,7 +212,6 @@ register(type(_C().f), _reduce_method)
 
 def _reduce_method_descriptor(m):
     return getattr, (m.__objclass__, m.__name__)
-register(type(list.append), _reduce_method_descriptor)
 register(type(int.__add__), _reduce_method_descriptor)
 
 
@@ -271,7 +270,6 @@ class AbstractReducer(metaclass=ABCMeta):
 
     def __init__(self, *args):
         register(type(_C().f), _reduce_method)
-        register(type(list.append), _reduce_method_descriptor)
         register(type(int.__add__), _reduce_method_descriptor)
         register(functools.partial, _reduce_partial)
         register(socket.socket, _reduce_socket)

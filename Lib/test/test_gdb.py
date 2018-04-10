@@ -605,7 +605,7 @@ id(a)''')
 
     def test_builtin_method(self):
         gdb_repr, gdb_output = self.get_gdb_repr('import sys; id(sys.stdout.readlines)')
-        self.assertTrue(re.match(r'<built-in method readlines of _io.TextIOWrapper object at remote 0x-?[0-9a-f]+>',
+        self.assertTrue(re.match(r'<bound_method at remote 0x-?[0-9a-f]+>',
                                  gdb_repr),
                         'Unexpected gdb representation: %r\n%s' % \
                             (gdb_repr, gdb_output))

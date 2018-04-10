@@ -33,12 +33,16 @@ class _C:
     def _m(self): pass
 MethodType = type(_C()._m)
 
+# The MRO ends with defined_function, base_function, object (PEP 575)
+BaseFunctionType = FunctionType.__mro__[-2]
+DefinedFunctionType = FunctionType.__mro__[-3]
+
 BuiltinFunctionType = type(len)
-BuiltinMethodType = type([].append)     # Same as BuiltinFunctionType
+BuiltinMethodType = type([].append)     # Same as MethodType
 
 WrapperDescriptorType = type(object.__init__)
 MethodWrapperType = type(object().__str__)
-MethodDescriptorType = type(str.join)
+MethodDescriptorType = type(str.join)   # Same as BuiltinFunctionType
 ClassMethodDescriptorType = type(dict.__dict__['fromkeys'])
 
 ModuleType = type(sys)

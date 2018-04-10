@@ -944,26 +944,24 @@ class DocTestFinder:
         """
         if module is None:
             return True
-        elif inspect.getmodule(object) is not None:
-            return module is inspect.getmodule(object)
-        elif inspect.isfunction(object):
+        mod = inspect.getmodule(object)
+        if mod is not None:
+            return module is mod
+        if inspect.isfunction(object):
             return module.__dict__ is object.__globals__
-        elif inspect.ismethoddescriptor(object):
-            if hasattr(object, '__objclass__'):
-                obj_mod = object.__objclass__.__module__
-            elif hasattr(object, '__module__'):
-                obj_mod = object.__module__
-            else:
-                return True # [XX] no easy way to tell otherwise
-            return module.__name__ == obj_mod
-        elif inspect.isclass(object):
-            return module.__name__ == object.__module__
-        elif hasattr(object, '__module__'):
-            return module.__name__ == object.__module__
-        elif isinstance(object, property):
-            return True # [XX] no way not be sure.
+        try:
+            object = object.__objclass__
+        except AttributeError:
+            pass
+        try:
+            mod = object.__module__
+        except AttributeError:
+            pass
         else:
-            raise ValueError("object must be a class or function")
+            return module.__name__ == mod
+        if isinstance(object, property):
+            return True  # [XX] no way not be sure.
+        raise ValueError("object must be a class or function, not {!r}".format(type(object)))
 
     def _find(self, tests, obj, name, module, source_lines, globs, seen):
         """

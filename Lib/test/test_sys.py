@@ -922,8 +922,8 @@ class SizeofTest(unittest.TestCase):
         check(True, vsize('') + self.longdigit)
         # buffer
         # XXX
-        # builtin_function_or_method
-        check(len, size('4P')) # XXX check layout
+        # builtin_function
+        check(len, size('5P'))
         # bytearray
         samples = [b'', b'u'*100000]
         for sample in samples:
@@ -953,8 +953,6 @@ class SizeofTest(unittest.TestCase):
         check_code_size(get_cell2.__code__, size('6i13P') + calcsize('n'))
         # complex
         check(complex(0,1), size('2d'))
-        # method_descriptor (descriptor object)
-        check(str.lower, size('3PP'))
         # classmethod_descriptor (descriptor object)
         # XXX
         # member_descriptor (descriptor object)
@@ -1021,7 +1019,7 @@ class SizeofTest(unittest.TestCase):
         check(x, vsize('5P2c4P3ic' + CO_MAXBLOCKS*'3i' + 'P' + extras*'P'))
         # function
         def func(): pass
-        check(func, size('12P'))
+        check(func, size('5P10PPPi'))
         class c():
             @staticmethod
             def foo():
