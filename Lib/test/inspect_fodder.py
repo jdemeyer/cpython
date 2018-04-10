@@ -74,3 +74,15 @@ class FesteringGob(MalodorousPervert, ParrotDroppings):
 
 async def lobbest(grenade):
     pass
+
+
+class Callable:
+    def __call__(self, *args):
+        return args
+
+    def as_method_of(self, obj):
+        from types import MethodType
+        return MethodType(self, obj)
+
+custom_method = Callable().as_method_of(42)
+del Callable
