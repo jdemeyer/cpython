@@ -710,7 +710,8 @@ static PyTypeObject lru_list_elem_type = {
 typedef PyObject *(*lru_cache_ternaryfunc)(struct lru_cache_object *, PyObject *, PyObject *);
 
 typedef struct lru_cache_object {
-    lru_list_elem root;  /* includes PyObject_HEAD */
+    PyObject_HEAD;
+    lru_list_elem* root;
     Py_ssize_t maxsize;
     PyObject *maxsize_O;
     PyObject *func;
@@ -844,7 +845,7 @@ lru_cache_extricate_link(lru_list_elem *link)
 static void
 lru_cache_append_link(lru_cache_object *self, lru_list_elem *link)
 {
-    lru_list_elem *root = &self->root;
+    lru_list_elem *root = self->root;
     lru_list_elem *last = root->prev;
     last->next = root->prev = link;
     link->prev = last;
@@ -885,11 +886,12 @@ bounded_lru_cache_wrapper(lru_cache_object *self, PyObject *args, PyObject *kwds
         Py_DECREF(key);
         return NULL;
     }
-    if (self->full && self->root.next != &self->root) {
+    lru_list_elem *root = self->root;
+    if (self->full && root->next != root) {
         /* Use the oldest item to store the new key and result. */
         PyObject *oldkey, *oldresult, *popresult;
         /* Extricate the oldest item. */
-        link = self->root.next;
+        link = root->next;
         lru_cache_extricate_link(link);
         /* Remove it from the cache.
            The cache dict holds one reference to the link,
@@ -1014,8 +1016,12 @@ lru_cache_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     }
 
     obj->cache = cachedict;
-    obj->root.prev = &obj->root;
-    obj->root.next = &obj->root;
+    obj->root = (lru_list_elem *)PyObject_New(lru_list_elem,
+                                              &lru_list_elem_type);
+    obj->root->prev = obj->root;
+    obj->root->next = obj->root;
+    obj->root->key = NULL;
+    obj->root->result = NULL;
     obj->maxsize = maxsize;
     Py_INCREF(maxsize_O);
     obj->maxsize_O = maxsize_O;
@@ -1033,7 +1039,7 @@ lru_cache_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 static lru_list_elem *
 lru_cache_unlink_list(lru_cache_object *self)
 {
-    lru_list_elem *root = &self->root;
+    lru_list_elem *root = self->root;
     lru_list_elem *link = root->next;
     if (link == root)
         return NULL;
@@ -1066,6 +1072,7 @@ lru_cache_dealloc(lru_cache_object *obj)
     Py_XDECREF(obj->dict);
     Py_XDECREF(obj->cache_info_type);
     lru_cache_clear_list(list);
+    Py_XDECREF(obj->root);
     Py_TYPE(obj)->tp_free(obj);
 }
 
@@ -1127,8 +1134,8 @@ lru_cache_deepcopy(PyObject *self, PyObject *unused)
 static int
 lru_cache_tp_traverse(lru_cache_object *self, visitproc visit, void *arg)
 {
-    lru_list_elem *link = self->root.next;
-    while (link != &self->root) {
+    lru_list_elem *link = self->root->next;
+    while (link != self->root) {
         lru_list_elem *next = link->next;
         Py_VISIT(link->key);
         Py_VISIT(link->result);
