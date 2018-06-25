@@ -4761,7 +4761,6 @@ add_methods(PyTypeObject *type, PyMethodDef *meth)
     for (; meth->ml_name != NULL; meth++) {
         PyObject *descr;
         int err;
-        int isdescr = 1;
         if (PyDict_GetItemString(dict, meth->ml_name) &&
             !(meth->ml_flags & METH_COEXIST))
                 continue;
@@ -4778,7 +4777,6 @@ add_methods(PyTypeObject *type, PyMethodDef *meth)
             if (cfunc == NULL)
                 return -1;
             descr = PyStaticMethod_New(cfunc);
-            isdescr = 0;  // PyStaticMethod is not PyDescrObject
             Py_DECREF(cfunc);
         }
         else {
@@ -4786,12 +4784,7 @@ add_methods(PyTypeObject *type, PyMethodDef *meth)
         }
         if (descr == NULL)
             return -1;
-        if (isdescr) {
-            err = PyDict_SetItem(dict, PyDescr_NAME(descr), descr);
-        }
-        else {
-            err = PyDict_SetItemString(dict, meth->ml_name, descr);
-        }
+        err = PyDict_SetItemString(dict, meth->ml_name, descr);
         Py_DECREF(descr);
         if (err < 0)
             return -1;
@@ -5206,8 +5199,9 @@ PyType_Ready(PyTypeObject *type)
             inherit_slots(type, (PyTypeObject *)b);
     }
 
-    /* All bases of statically allocated type should be statically allocated */
     if (!(type->tp_flags & Py_TPFLAGS_HEAPTYPE))
+    {
+        /* All bases of statically allocated type should be statically allocated */
         for (i = 0; i < n; i++) {
             PyObject *b = PyTuple_GET_ITEM(bases, i);
             if (PyType_Check(b) &&
@@ -5219,6 +5213,20 @@ PyType_Ready(PyTypeObject *type)
                 goto error;
             }
         }
+
+        /* Inherit C call protocol from base if tp_call and tp_descr_get
+           are also inherited */
+        base = type->tp_base;
+        if (base != NULL &&
+            (base->tp_flags & Py_TPFLAGS_HAVE_CCALL) &&
+            !(type->tp_flags & Py_TPFLAGS_HAVE_CCALL) &&
+            (base->tp_call == type->tp_call) &&
+            (base->tp_descr_get == type->tp_descr_get))
+        {
+            type->tp_flags |= Py_TPFLAGS_HAVE_CCALL;
+            type->tp_ccalloffset = base->tp_ccalloffset;
+        }
+    }
 
     /* Sanity check for tp_free. */
     if (PyType_IS_GC(type) && (type->tp_flags & Py_TPFLAGS_BASETYPE) &&

@@ -7,11 +7,13 @@
 extern "C" {
 #endif
 
-/* This is about the type 'builtin_function_or_method',
-   not Python methods in user-defined classes.  See classobject.h
-   for the latter. */
+
+/* This is about the classes 'builtin_function_or_method'
+   and 'method_descriptor', not Python methods in user-defined
+   classes.  See classobject.h for the latter. */
 
 PyAPI_DATA(PyTypeObject) PyCFunction_Type;
+PyAPI_DATA(PyTypeObject) PyMethodDescr_Type;
 
 #define PyCFunction_Check(op) (Py_TYPE(op) == &PyCFunction_Type)
 
@@ -26,32 +28,17 @@ typedef PyObject *(*PyNoArgsFunction)(PyObject *);
 
 PyAPI_FUNC(PyCFunction) PyCFunction_GetFunction(PyObject *);
 PyAPI_FUNC(PyObject *) PyCFunction_GetSelf(PyObject *);
-PyAPI_FUNC(int) PyCFunction_GetFlags(PyObject *);
 
 /* Macros for direct access to these values. Type checks are *not*
    done, so use with care. */
 #ifndef Py_LIMITED_API
-#define PyCFunction_GET_FUNCTION(func) \
-        (((PyCFunctionObject *)func) -> m_ml -> ml_meth)
-#define PyCFunction_GET_SELF(func) \
-        (((PyCFunctionObject *)func) -> m_ml -> ml_flags & METH_STATIC ? \
-         NULL : ((PyCFunctionObject *)func) -> m_self)
-#define PyCFunction_GET_FLAGS(func) \
-        (((PyCFunctionObject *)func) -> m_ml -> ml_flags)
+#define PyCFunction_GET_FUNCTION(func) ( \
+        (PyCFunction)((PyCFunctionObject *)func)->m_ccall->cc_func)
+#define PyCFunction_GET_SELF(func) ( \
+        (((PyCFunctionObject *)func)->m_self == Py_None) ? \
+        NULL : ((PyCFunctionObject *)func)->m_self)
 #endif
 PyAPI_FUNC(PyObject *) PyCFunction_Call(PyObject *, PyObject *, PyObject *);
-
-#ifndef Py_LIMITED_API
-PyAPI_FUNC(PyObject *) _PyCFunction_FastCallDict(PyObject *func,
-    PyObject *const *args,
-    Py_ssize_t nargs,
-    PyObject *kwargs);
-
-PyAPI_FUNC(PyObject *) _PyCFunction_FastCallKeywords(PyObject *func,
-    PyObject *const *stack,
-    Py_ssize_t nargs,
-    PyObject *kwnames);
-#endif
 
 struct PyMethodDef {
     const char  *ml_name;   /* The name of the built-in function/method */
@@ -89,6 +76,9 @@ PyAPI_FUNC(PyObject *) PyCFunction_NewEx(PyMethodDef *, PyObject *,
 
 #ifndef Py_LIMITED_API
 #define METH_FASTCALL  0x0080
+
+/* All flags influencing the signature of the C function */
+#define METH_SIGNATURE (METH_VARARGS | METH_FASTCALL | METH_NOARGS | METH_O | METH_KEYWORDS)
 #endif
 
 /* This bit is preserved for Stackless Python */
@@ -98,28 +88,115 @@ PyAPI_FUNC(PyObject *) PyCFunction_NewEx(PyMethodDef *, PyObject *,
 #define METH_STACKLESS 0x0000
 #endif
 
+PyAPI_FUNC(PyObject *) PyDescr_NewMethod(PyTypeObject *, PyMethodDef *);
+
+PyAPI_FUNC(PyObject *) PyCFunction_ClsNew(
+    PyTypeObject *cls,
+    PyMethodDef *ml,
+    PyObject *self,
+    PyObject *module,
+    PyObject *parent);
+
+
+/* C call protocol (PEP 580) */
+
+#ifndef Py_LIMITED_API
+/* Various function pointer types used for cc_func. The letters indicate
+   the kind of argument:
+     F: function object
+     S: __self__
+     A: *args or single argument
+     N: C array for METH_FASTCALL
+     n: len(args) for METH_FASTCALL
+     K: **kwargs
+   */
+typedef PyObject *(*PyCFunc_SA)(PyObject *, PyObject *);
+typedef PyObject *(*PyCFunc_SAK)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*PyCFunc_SNn)(PyObject *, PyObject *const *, Py_ssize_t);
+typedef PyObject *(*PyCFunc_SNnK)(PyObject *, PyObject *const *, Py_ssize_t, PyObject *);
+typedef PyObject *(*PyCFunc_FSA)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*PyCFunc_FSAK)(PyObject *, PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*PyCFunc_FSNn)(PyObject *, PyObject *, PyObject *const *, Py_ssize_t);
+typedef PyObject *(*PyCFunc_FSNnK)(PyObject *, PyObject *, PyObject *const *, Py_ssize_t, PyObject *);
+
+/* Unspecified function pointer */
+typedef void *(*PyCFunc)(void);
+
+typedef struct {
+    uint32_t  cc_flags;
+    PyCFunc   cc_func;    /* C function to call */
+    PyObject *cc_parent;  /* class or module or anything, may be NULL */
+} PyCCallDef;
+
+PyAPI_FUNC(int) _PyCCallDef_FromMethodDef(PyCCallDef *cc,
+                                          PyMethodDef *ml, PyObject *parent);
+
+/* Base signature: one of 4 possibilities, exactly one must be given.
+   The rationale for the numerical values is as follows:
+   - the valid combinations with CCALL_KEYWORDS | CCALL_FUNCARG give
+     precisely the range [0, ..., 11]. This allows the compiler to
+     implement the main switch statement in PyCCall_FASTCALL() using a
+     jump table.
+   - in a few places we are explicitly checking for CCALL_VARARGS,
+     which is fastest when CCALL_VARARGS == 0
+*/
+#define CCALL_VARARGS          0x00000000
+#define CCALL_FASTCALL         0x00000002
+#define CCALL_O                0x00000004
+#define CCALL_NULLARG          0x00000006
+
+/* Other flags, these are single bits */
+#define CCALL_KEYWORDS         0x00000008
+#define CCALL_FUNCARG          0x00000001
+#define CCALL_OBJCLASS         0x00000010
+#define CCALL_PROFILE          0x00000020
+#define CCALL_SLICE_SELF       0x00000040
+
+/* Combinations of some of the above flags */
+#define CCALL_BASESIGNATURE    (CCALL_VARARGS | CCALL_FASTCALL | CCALL_O | CCALL_NULLARG)
+#define CCALL_SIGNATURE        (CCALL_BASESIGNATURE | CCALL_KEYWORDS | CCALL_FUNCARG)
+
+/* Hack to add a special error message for print >> f */
+#define _CCALL_BUILTIN_PRINT   0x10000000
+
+#define PyCCall_Check(op) (Py_TYPE(op)->tp_flags & Py_TPFLAGS_HAVE_CCALL)
+
+typedef struct {
+    PyCCallDef *cr_ccall;
+    PyObject   *cr_self;     /* __self__ argument for methods */
+} PyCCallRoot;
+
+PyAPI_FUNC(PyObject *) PyCCall_Call(PyObject *func, PyObject *args, PyObject *kwds);
+PyAPI_FUNC(PyObject *) PyCCall_FASTCALL(
+    PyObject *func,
+    PyObject *const *args,
+    Py_ssize_t nargs,
+    PyObject *keywords);
+
+#define PyCCall_CCALLROOT(func) ((PyCCallRoot*)(((char*)func) + Py_TYPE(func)->tp_ccalloffset))
+#define PyCCall_CCALLDEF(func) (PyCCall_CCALLROOT(func)->cr_ccall)
+#define PyCCall_FLAGS(func) (PyCCall_CCALLROOT(func)->cr_ccall->cc_flags)
+#define PyCCall_SELF(func) (PyCCall_CCALLROOT(func)->cr_self)
+
+PyAPI_FUNC(PyObject *) PyCCall_GenericGetSelf(PyObject *, void *);
+PyAPI_FUNC(PyObject *) PyCCall_GenericGetQualname(PyObject *, void *);
+PyAPI_FUNC(PyObject *) PyCCall_GenericGetParent(PyObject *, void *);
+#endif   /* Py_LIMITED_API */
+
+
 #ifndef Py_LIMITED_API
 typedef struct {
     PyObject_HEAD
-    PyMethodDef *m_ml; /* Description of the C function to call */
-    PyObject    *m_self; /* Passed as 'self' arg to the C func, can be NULL */
-    PyObject    *m_module; /* The __module__ attribute, can be anything */
-    PyObject    *m_weakreflist; /* List of weak references */
+    PyCCallDef  *m_ccall;
+    PyObject    *m_self;         /* Passed as 'self' arg to the C function */
+    PyCCallDef   _ccalldef;      /* Storage for m_ccall */
+    PyObject    *m_name;         /* __name__; str object (not NULL) */
+    PyObject    *m_module;       /* __module__; can be anything */
+    const char  *m_doc;          /* __text_signature__ and __doc__ */
+    PyObject    *m_weakreflist;  /* List of weak references */
 } PyCFunctionObject;
 
-PyAPI_FUNC(PyObject *) _PyMethodDef_RawFastCallDict(
-    PyMethodDef *method,
-    PyObject *self,
-    PyObject *const *args,
-    Py_ssize_t nargs,
-    PyObject *kwargs);
-
-PyAPI_FUNC(PyObject *) _PyMethodDef_RawFastCallKeywords(
-    PyMethodDef *method,
-    PyObject *self,
-    PyObject *const *args,
-    Py_ssize_t nargs,
-    PyObject *kwnames);
+PyAPI_FUNC(PyObject *) _PyCFunction_NewBoundMethod(PyCFunctionObject *func, PyObject *self);
 #endif
 
 PyAPI_FUNC(int) PyCFunction_ClearFreeList(void);
