@@ -36,7 +36,10 @@ typedef PyObject *(*callproc)(PyObject *, PyObject *, PyObject *);
 /* Forward declarations */
 Py_LOCAL_INLINE(PyObject *) call_function(PyObject ***, Py_ssize_t,
                                           PyObject *);
-static PyObject * do_call_core(PyObject *, PyObject *, PyObject *);
+static inline PyObject* profile_call(PyObject *, PyObject *, PyObject *);
+static inline PyObject* profile_fastcall(PyObject *,
+                                         PyObject *const *, Py_ssize_t,
+                                         PyObject *);
 
 #ifdef LLTRACE
 static int lltrace;
@@ -3254,7 +3257,12 @@ main_loop:
             }
             assert(PyTuple_CheckExact(callargs));
 
-            result = do_call_core(func, callargs, kwargs);
+            if (PyCCall_Check(func)) {
+                result = profile_call(func, callargs, kwargs);
+            }
+            else {
+                result = PyObject_Call(func, callargs, kwargs);
+            }
             Py_DECREF(func);
             Py_DECREF(callargs);
             Py_XDECREF(kwargs);
@@ -4495,8 +4503,8 @@ PyEval_GetFuncName(PyObject *func)
         return PyEval_GetFuncName(PyMethod_GET_FUNCTION(func));
     else if (PyFunction_Check(func))
         return PyUnicode_AsUTF8(((PyFunctionObject*)func)->func_name);
-    else if (PyCFunction_Check(func))
-        return ((PyCFunctionObject*)func)->m_ml->ml_name;
+    else if (PyCCall_Check(func))
+        return PyUnicode_AsUTF8(PyCCall_CCALLDEF(func)->cc_name);
     else
         return func->ob_type->tp_name;
 }
@@ -4504,46 +4512,120 @@ PyEval_GetFuncName(PyObject *func)
 const char *
 PyEval_GetFuncDesc(PyObject *func)
 {
-    if (PyMethod_Check(func))
+    if (PyCCall_Check(func))
+        return "()";
+    else if (PyMethod_Check(func))
         return "()";
     else if (PyFunction_Check(func))
-        return "()";
-    else if (PyCFunction_Check(func))
         return "()";
     else
         return " object";
 }
 
-#define C_TRACE(x, call) \
-if (tstate->use_tracing && tstate->c_profilefunc) { \
-    if (call_trace(tstate->c_profilefunc, tstate->c_profileobj, \
-        tstate, tstate->frame, \
-        PyTrace_C_CALL, func)) { \
-        x = NULL; \
-    } \
-    else { \
-        x = call; \
-        if (tstate->c_profilefunc != NULL) { \
-            if (x == NULL) { \
-                call_trace_protected(tstate->c_profilefunc, \
-                    tstate->c_profileobj, \
-                    tstate, tstate->frame, \
-                    PyTrace_C_EXCEPTION, func); \
-                /* XXX should pass (type, value, tb) */ \
-            } else { \
-                if (call_trace(tstate->c_profilefunc, \
-                    tstate->c_profileobj, \
-                    tstate, tstate->frame, \
-                    PyTrace_C_RETURN, func)) { \
-                    Py_DECREF(x); \
-                    x = NULL; \
-                } \
-            } \
-        } \
-    } \
-} else { \
-    x = call; \
+
+static PyObject * _Py_NO_INLINE
+PyCCall_FASTCALL_PROFILE(PyThreadState *tstate,
+                         PyObject *func,
+                         PyObject *const *args, Py_ssize_t nargs,
+                         PyObject *keywords)
+{
+    PyObject *arg;
+
+    /* If we have self slicing, we pass the bound method as argument */
+    if (PyCCall_SELF(func) == NULL &&
+        (PyCCall_CCALLDEF(func)->cc_flags & CCALL_SLICE_SELF))
+    {
+        /* If we are called without argument, this is an illegal call.
+           Instead of raising an error ourselves, we delegate that
+           for simplicity. */
+        if (nargs <= 0) {
+            return PyCCall_FASTCALL(func, NULL, 0, keywords);
+        }
+        PyObject *self = args[0];
+        descrgetfunc get = Py_TYPE(func)->tp_descr_get;
+        if (get == NULL) {
+            PyErr_Format(PyExc_TypeError,
+                "__get__ not implemented for %.100s",
+                Py_TYPE(func)->tp_name);
+            return NULL;
+        }
+        arg = get(func, self, (PyObject*)Py_TYPE(self));
+        if (arg == NULL) {
+            return NULL;
+        }
     }
+    else {
+        arg = func;
+        Py_INCREF(arg);
+    }
+
+    if (tstate->c_profilefunc != NULL) {
+        if (call_trace(tstate->c_profilefunc, tstate->c_profileobj,
+            tstate, tstate->frame,
+            PyTrace_C_CALL, arg))
+        {
+            Py_DECREF(arg);
+            return NULL;
+        }
+    }
+
+    PyObject *res = PyCCall_FASTCALL(func, args, nargs, keywords);
+
+    if (tstate->c_profilefunc != NULL) {
+        if (res == NULL) {
+            call_trace_protected(tstate->c_profilefunc,
+                tstate->c_profileobj,
+                tstate, tstate->frame,
+                PyTrace_C_EXCEPTION, arg);
+        }
+        else {
+            if (call_trace(tstate->c_profilefunc,
+                tstate->c_profileobj,
+                tstate, tstate->frame,
+                PyTrace_C_RETURN, arg))
+            {
+                Py_DECREF(arg);
+                Py_DECREF(res);
+                return NULL;
+            }
+        }
+    }
+    Py_DECREF(arg);
+    return res;
+}
+
+
+static inline PyObject*
+profile_call(PyObject *func, PyObject *args, PyObject *kwargs)
+{
+    if (PyCCall_CCALLDEF(func)->cc_flags & CCALL_PROFILE)
+    {
+        PyThreadState *tstate = PyThreadState_GET();
+        if (tstate->use_tracing) {
+            return PyCCall_FASTCALL_PROFILE(tstate, func,
+                &PyTuple_GET_ITEM(args, 0), PyTuple_GET_SIZE(args), kwargs);
+        }
+    }
+    return PyCCall_Call(func, args, kwargs);
+}
+
+
+static inline PyObject*
+profile_fastcall(PyObject *func,
+                 PyObject *const *args, Py_ssize_t nargs,
+                 PyObject *keywords)
+{
+    if (PyCCall_CCALLDEF(func)->cc_flags & CCALL_PROFILE)
+    {
+        PyThreadState *tstate = PyThreadState_GET();
+        if (tstate->use_tracing) {
+            return PyCCall_FASTCALL_PROFILE(tstate, func,
+                args, nargs, keywords);
+        }
+    }
+    return PyCCall_FASTCALL(func, args, nargs, keywords);
+}
+
 
 /* Issue #29227: Inline call_function() into _PyEval_EvalFrameDefault()
    to reduce the stack consumption. */
@@ -4557,29 +4639,8 @@ call_function(PyObject ***pp_stack, Py_ssize_t oparg, PyObject *kwnames)
     Py_ssize_t nargs = oparg - nkwargs;
     PyObject **stack = (*pp_stack) - nargs - nkwargs;
 
-    /* Always dispatch PyCFunction first, because these are
-       presumed to be the most frequent callable object.
-    */
-    if (PyCFunction_Check(func)) {
-        PyThreadState *tstate = PyThreadState_GET();
-        C_TRACE(x, _PyCFunction_FastCallKeywords(func, stack, nargs, kwnames));
-    }
-    else if (Py_TYPE(func) == &PyMethodDescr_Type) {
-        PyThreadState *tstate = PyThreadState_GET();
-        if (tstate->use_tracing && tstate->c_profilefunc) {
-            // We need to create PyCFunctionObject for tracing.
-            PyMethodDescrObject *descr = (PyMethodDescrObject*)func;
-            func = PyCFunction_NewEx(descr->d_method, stack[0], NULL);
-            if (func == NULL) {
-                return NULL;
-            }
-            C_TRACE(x, _PyCFunction_FastCallKeywords(func, stack+1, nargs-1,
-                                                     kwnames));
-            Py_DECREF(func);
-        }
-        else {
-            x = _PyMethodDescr_FastCallKeywords(func, stack, nargs, kwnames);
-        }
+    if (PyCCall_Check(func)) {
+        x = profile_fastcall(func, stack, nargs, kwnames);
     }
     else {
         if (PyMethod_Check(func) && PyMethod_GET_SELF(func) != NULL) {
@@ -4620,19 +4681,6 @@ call_function(PyObject ***pp_stack, Py_ssize_t oparg, PyObject *kwnames)
     return x;
 }
 
-static PyObject *
-do_call_core(PyObject *func, PyObject *callargs, PyObject *kwdict)
-{
-    if (PyCFunction_Check(func)) {
-        PyObject *result;
-        PyThreadState *tstate = PyThreadState_GET();
-        C_TRACE(result, PyCFunction_Call(func, callargs, kwdict));
-        return result;
-    }
-    else {
-        return PyObject_Call(func, callargs, kwdict);
-    }
-}
 
 /* Extract a slice index from a PyLong or an object with the
    nb_index slot defined, and store in *pi.

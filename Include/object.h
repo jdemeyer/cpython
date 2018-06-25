@@ -318,13 +318,9 @@ typedef struct {
 
 typedef void (*freefunc)(void *);
 typedef void (*destructor)(PyObject *);
-#ifndef Py_LIMITED_API
-/* We can't provide a full compile-time check that limited-API
-   users won't implement tp_print. However, not defining printfunc
-   and making tp_print of a different function pointer type
-   should at least cause a warning in most cases. */
-typedef int (*printfunc)(PyObject *, FILE *, int);
-#endif
+/* For backwards compatibility, support (printfunc)0 in the
+   tp_ccalloffset slot */
+typedef Py_ssize_t printfunc;
 typedef PyObject *(*getattrfunc)(PyObject *, char *);
 typedef PyObject *(*getattrofunc)(PyObject *, PyObject *);
 typedef int (*setattrfunc)(PyObject *, char *, PyObject *);
@@ -351,7 +347,7 @@ typedef struct _typeobject {
     /* Methods to implement standard operations */
 
     destructor tp_dealloc;
-    printfunc tp_print;
+    Py_ssize_t tp_ccalloffset;   /* Formerly known as tp_print */
     getattrfunc tp_getattr;
     setattrfunc tp_setattr;
     PyAsyncMethods *tp_as_async; /* formerly known as tp_compare (Python 2)
@@ -677,6 +673,9 @@ given type object has a specified feature.
 
 /* Type structure has tp_finalize member (3.4) */
 #define Py_TPFLAGS_HAVE_FINALIZE (1UL << 0)
+
+/* Type implements the C call protocol (PEP 580) */
+#define Py_TPFLAGS_HAVE_CCALL (1UL << 1)
 
 #ifdef Py_LIMITED_API
 #define PyType_HasFeature(t,f)  ((PyType_GetFlags(t) & (f)) != 0)
