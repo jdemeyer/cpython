@@ -5359,39 +5359,49 @@ check_args_iterable(PyThreadState *tstate, PyObject *func, PyObject *args)
 static void
 format_kwargs_error(PyThreadState *tstate, PyObject *func, PyObject *kwargs)
 {
-    /* _PyDict_MergeEx raises attribute
-     * error (percolated from an attempt
-     * to get 'keys' attribute) instead of
-     * a type error if its second argument
-     * is not a mapping.
-     */
-    if (_PyErr_ExceptionMatches(tstate, PyExc_AttributeError)) {
-        _PyErr_Format(tstate, PyExc_TypeError,
-                      "%.200s%.200s argument after ** "
-                      "must be a mapping, not %.200s",
-                      PyEval_GetFuncName(func),
-                      PyEval_GetFuncDesc(func),
-                      kwargs->ob_type->tp_name);
+    /* Store live exception. We either raise a better exception or we
+     * restore this exception. In any case, we set an exception. */
+    PyObject *exc, *val, *tb;
+    _PyErr_Fetch(tstate, &exc, &val, &tb);
+    assert(exc != NULL);
+
+    PyObject *funcstr = _PyObject_FunctionStr(func);
+    if (funcstr == NULL) {
+        goto newexc;
     }
-    else if (_PyErr_ExceptionMatches(tstate, PyExc_KeyError)) {
-        PyObject *exc, *val, *tb;
-        _PyErr_Fetch(tstate, &exc, &val, &tb);
+
+    /* _PyDict_MergeEx raises AttributeError (percolated from an attempt
+     * to get the 'keys' attribute) instead of TypeError if its second
+     * argument is not a mapping. */
+    if (PyErr_GivenExceptionMatches(exc, PyExc_AttributeError)) {
+        _PyErr_Format(tstate, PyExc_TypeError,
+                      "%U argument after ** "
+                      "must be a mapping, not %.200s",
+                      funcstr, Py_TYPE(kwargs)->tp_name);
+        goto newexc;
+    }
+    else if (PyErr_GivenExceptionMatches(exc, PyExc_KeyError)) {
         if (val && PyTuple_Check(val) && PyTuple_GET_SIZE(val) == 1) {
             PyObject *key = PyTuple_GET_ITEM(val, 0);
             _PyErr_Format(tstate, PyExc_TypeError,
-                          "%.200s%.200s got multiple "
+                          "%U got multiple "
                           "values for keyword argument '%S'",
-                          PyEval_GetFuncName(func),
-                          PyEval_GetFuncDesc(func),
-                          key);
-            Py_XDECREF(exc);
-            Py_XDECREF(val);
-            Py_XDECREF(tb);
-        }
-        else {
-            _PyErr_Restore(tstate, exc, val, tb);
+                          funcstr, key);
+            goto newexc;
         }
     }
+
+    /* Restore old exception */
+    _PyErr_Restore(tstate, exc, val, tb);
+    Py_DECREF(funcstr);
+    return;
+
+newexc:
+    /* A new exception was raised, deallocate the previous one */
+    Py_XDECREF(exc);
+    Py_XDECREF(val);
+    Py_XDECREF(tb);
+    Py_XDECREF(funcstr);
 }
 
 static void
